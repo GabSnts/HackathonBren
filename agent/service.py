@@ -9,36 +9,71 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_openai import ChatOpenAI
 from langchain.prompts import MessagesPlaceholder
 
+from langchain.agents.format_scratchpad.openai_tools import (format_to_openai_tool_messages,)
+from langchain.agents.output_parsers.openai_tools import OpenAIToolsAgentOutputParser
+
 class AgentService:
     
     def agent(self, payload:ChatSchema):
+        MEMORY_KEY = 'chat_history'
+        
         langchain.verbose = False
 
-        llm = ChatOpenAI(model="gpt-3.5-turbo", openai_api_key="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", temperature=0)
+        llm = ChatOpenAI(model="gpt-3.5-turbo", openai_api_key="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", temperature=0)
   
         prompt = cp.from_messages([("system", "You are a sales agent capable of suggesting and recommending product sales in an effective and engaging way."), 
+                                    MessagesPlaceholder(variable_name=MEMORY_KEY),
                                    ("user", "{input}"),
                                     MessagesPlaceholder(variable_name="agent_scratchpad"),
                                    ])
+        
+        chat_history = []
             
         tools = search_travily()
-        agent = create_openai_functions_agent(llm, tools, prompt)
+        # agent = create_openai_functions_agent(llm, tools, prompt)
+        
+        
+        agent = (
+                {
+                    "input": lambda x: x["input"],
+                    "agent_scratchpad": lambda x: format_to_openai_tool_messages(
+                        x["intermediate_steps"]
+                    ),
+                    "chat_history": lambda x: x["chat_history"],
+                }
+                | prompt
+                | llm
+                | OpenAIToolsAgentOutputParser()
+            )
+        
+        
         agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
         
         
-        ai_response = agent_executor.invoke(
-                                            {
-                                                "chat_history": [
-                                                    HumanMessage(content=Conversation.objects.filter().first().last_message_human),
-                                                    AIMessage(content=Conversation.objects.filter().first().last_message_ai),
-                                                ],
-                                                "input": payload,
-                                            }
-                                        )    
+        if not Conversation.objects.all():
+            ai_response = agent_executor.invoke({"input": payload.dict().get("message"), "chat_history": chat_history})
+            chat_history.extend(
+                    [
+                        HumanMessage(content=payload.dict().get("message")),
+                        AIMessage(content=ai_response["output"]),
+                    ]
+                    )
+            
+        else:
+            ai_response = agent_executor.invoke({"input": Conversation.objects.filter().last().last_message_human, "chat_history": chat_history})
+            chat_history.extend(
+                                [
+                                    HumanMessage(content=Conversation.objects.filter().last().last_message_human),
+                                    AIMessage(content=ai_response["output"]),
+                                ]
+                                )
+        
+        ai_response = agent_executor.invoke({"input": payload.dict().get("message"), "chat_history": chat_history})
+ 
         if not Conversation.objects.filter(last_message_human=payload.dict().get("message")).first():
-            history = {"last_message_human": payload.dict().get("message"), "last_message_ai": ai_response.get("output")}
+            history = {"last_message_human": payload.dict().get("message"), "last_message_ai": ai_response['output']}
             Conversation.objects.create(**history)
                     
         
-        return str(ai_response.get("output"))    
+        return str(ai_response['output'])    
      
